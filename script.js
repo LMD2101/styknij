@@ -3,7 +3,7 @@
 // KONFIGURACJA
 // ===================================
 
-// PRZEPISZ TU SWOJE DOTYCHCZASOWE WARTOŚCI!
+// ZACHOWAJ SWOJE DOTYCHCZASOWE WARTOŚCI!
 const SUPABASE_URL = "https://cyrrxgyqyahnxjbvgqmy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_6eq2OFDAgjM880ulznbA6w_aHQLejom";
 const VAPID_PUBLIC_KEY = "BE9LN658qu3-4qMbATBP6TYBKYVHx8zL9Aus08t90m8N_ybg6B_skW0GhvQ72svGF5O3xH921igvcGcuWL-_1do";
@@ -28,23 +28,16 @@ let partnerName = null;
 let channel = null;
 let swRegistration = null;
 let refreshInProgress = false;
-let lastAcceptedIds = new Set();
-let lastDeclinedIds = new Set();
 let pairCheckTimer = null;
 
-// ===================================
-// PANEL APLIKACJI
-// ===================================
-
-const setup = document.createElement("div");
-setup.className = "setup";
-content.prepend(setup);
-
-function showSetup(html) {
-    setup.innerHTML = html;
-}
+// Zapamiętujemy stykniecia, które czekały na odpowiedź.
+let previousOutgoingPendingIds = null;
 
 let messageTimer = null;
+
+// ===================================
+// KOMUNIKATY
+// ===================================
 
 function showMessage(text) {
     message.textContent = text;
@@ -72,6 +65,18 @@ function escapeHTML(value) {
 }
 
 // ===================================
+// PANEL APLIKACJI
+// ===================================
+
+const setup = document.createElement("div");
+setup.className = "setup";
+content.prepend(setup);
+
+function showSetup(html) {
+    setup.innerHTML = html;
+}
+
+// ===================================
 // DODATKOWE STYLE
 // ===================================
 
@@ -94,6 +99,11 @@ extraStyles.textContent = `
     color: white;
     font-size: 14px;
     cursor: pointer;
+}
+
+.setup button:disabled {
+    opacity: 0.6;
+    cursor: not-allowed;
 }
 
 .setup input {
@@ -126,17 +136,6 @@ extraStyles.textContent = `
     color: #641f35;
 }
 
-.request-card {
-    background: #fff9f0;
-    border-radius: 14px;
-    padding: 13px;
-    margin-top: 10px;
-}
-
-.request-card p {
-    color: #603c46;
-}
-
 .request-count {
     display: inline-block;
     min-width: 26px;
@@ -153,6 +152,12 @@ extraStyles.textContent = `
     justify-content: center;
     flex-wrap: wrap;
     gap: 5px;
+    margin-top: 12px;
+}
+
+.request-actions button {
+    flex: 1;
+    min-width: 130px;
 }
 
 .secondary-button {
@@ -416,7 +421,7 @@ function waitingScreen() {
 }
 
 // ===================================
-// POWIADOMIENIA
+// POWIADOMIENIA PUSH
 // ===================================
 
 function urlBase64ToUint8Array(base64String) {
@@ -488,8 +493,6 @@ async function checkNotifications() {
 
         if (error) throw error;
 
-        button.textContent = "♡ Powiadomienia włączone";
-        button.disabled = true;
         button.style.display = "none";
 
     } catch (error) {
@@ -554,8 +557,6 @@ async function enablePushNotifications() {
             document.querySelector("#enableNotifications");
 
         if (button) {
-            button.textContent = "♡ Powiadomienia włączone";
-            button.disabled = true;
             button.style.display = "none";
         }
 
@@ -564,6 +565,29 @@ async function enablePushNotifications() {
     } catch (error) {
         console.error("Błąd powiadomień:", error);
         showMessage("Nie udało się włączyć powiadomień: " + error.message);
+    }
+}
+
+// ===================================
+// WYSYŁANIE POWIADOMIENIA O ODPOWIEDZI
+// ===================================
+
+async function sendResponseNotification(requestIds, status) {
+    if (!requestIds || requestIds.length === 0) return;
+
+    const { error } = await db.functions.invoke(
+        "send-touch-response-notification",
+        {
+            body: {
+                requestIds,
+                responderName: localStorage.getItem("styknij_profile"),
+                status
+            }
+        }
+    );
+
+    if (error) {
+        console.error("Błąd powiadomienia o odpowiedzi:", error);
     }
 }
 
@@ -581,6 +605,8 @@ async function startApp() {
         await db.removeChannel(channel);
         channel = null;
     }
+
+    previousOutgoingPendingIds = null;
 
     showSetup(`
         <p>Połączono z ${escapeHTML(partnerName)} ♡</p>
@@ -649,7 +675,6 @@ async function sendTouch() {
     showMessage("Wysłano stykniecie ♡");
     touchButton.textContent = "♡ Stykniecie wysłane!";
 
-    // Powiadomienie dla drugiej osoby.
     const { error: pushError } = await db.functions.invoke(
         "send-touch-notification",
         {
@@ -662,7 +687,6 @@ async function sendTouch() {
 
     if (pushError) {
         console.error("Błąd powiadomienia:", pushError);
-        showMessage("Stykniecie wysłane, ale powiadomienie nie dotarło.");
     }
 
     await refreshRequests(false);
@@ -707,16 +731,55 @@ async function refreshRequests(initial = false) {
             request.status === "pending"
         );
 
-        const outgoingAccepted = requests.filter(request =>
-            request.sender_id === currentUser.id &&
-            request.status === "accepted"
+        // Wykrywanie nowych odpowiedzi po stronie nadawcy.
+        const currentPendingIds = new Set(
+            outgoingPending.map(request => request.id)
         );
 
-        const outgoingDeclined = requests.filter(request =>
-            request.sender_id === currentUser.id &&
-            request.status === "declined"
-        );
+        if (previousOutgoingPendingIds !== null && !initial) {
+            const newlyResolved = requests.filter(request =>
+                previousOutgoingPendingIds.has(request.id) &&
+                request.sender_id === currentUser.id &&
+                (
+                    request.status === "accepted" ||
+                    request.status === "declined"
+                )
+            );
 
+            if (newlyResolved.length > 0) {
+                const acceptedCount = newlyResolved.filter(
+                    request => request.status === "accepted"
+                ).length;
+
+                const declinedCount = newlyResolved.filter(
+                    request => request.status === "declined"
+                ).length;
+
+                if (acceptedCount > 0 && declinedCount === 0) {
+                    showMessage(
+                        `${partnerName} zaakceptowała Twoje ` +
+                        `${acceptedCount === 1 ? "stykniecie" : "stykniecia"} ♡`
+                    );
+
+                    animateTouch();
+
+                } else if (declinedCount > 0 && acceptedCount === 0) {
+                    showMessage(
+                        `${partnerName} tym razem odrzuciła Twoje ` +
+                        `${declinedCount === 1 ? "stykniecie" : "stykniecia"}`
+                    );
+
+                } else {
+                    showMessage(
+                        `${partnerName} odpowiedziała na Twoje stykniecia ♡`
+                    );
+                }
+            }
+        }
+
+        previousOutgoingPendingIds = currentPendingIds;
+
+        // KARTA OTRZYMANYCH STYKNIEC
         const incomingBox =
             document.querySelector("#incomingRequest");
 
@@ -728,31 +791,19 @@ async function refreshRequests(initial = false) {
                         <span class="request-count">${incoming.length}</span>
                     </h3>
 
-                    <p>Masz ${incoming.length} oczekujących stykniec ♡</p>
+                    <p>
+                        Masz ${incoming.length}
+                        oczekujących stykniec ♡
+                    </p>
 
                     <div class="request-actions">
-                        <button id="acceptAll">♡ Akceptuj wszystkie</button>
+                        <button id="acceptAll">
+                            ♡ Akceptuj wszystkie
+                        </button>
+
                         <button id="declineAll" class="secondary-button">
                             Odrzuć wszystkie
                         </button>
-                    </div>
-
-                    <div>
-                        ${incoming.map((request, index) => `
-                            <div class="request-card">
-                                <p>Stykniecie ${incoming.length - index}</p>
-                                <div class="request-actions">
-                                    <button class="action-button"
-                                        data-accept="${request.id}">
-                                        ♡ Akceptuję
-                                    </button>
-                                    <button class="action-button secondary-button"
-                                        data-decline="${request.id}">
-                                        Odrzuć
-                                    </button>
-                                </div>
-                            </div>
-                        `).join("")}
                     </div>
                 `;
 
@@ -766,60 +817,42 @@ async function refreshRequests(initial = false) {
                         respondToAllTouches(false)
                     );
 
-                incomingBox.querySelectorAll("[data-accept]")
-                    .forEach(button => {
-                        button.addEventListener("click", () =>
-                            respondToTouch(button.dataset.accept, true)
-                        );
-                    });
-
-                incomingBox.querySelectorAll("[data-decline]")
-                    .forEach(button => {
-                        button.addEventListener("click", () =>
-                            respondToTouch(button.dataset.decline, false)
-                        );
-                    });
-
             } else {
                 incomingBox.innerHTML = "";
             }
         }
 
+        // KARTA WYSŁANYCH STYKNIEC
         const outgoingBox =
             document.querySelector("#outgoingRequest");
 
         if (outgoingBox) {
-            let outgoingHTML = "";
-
             if (outgoingPending.length > 0) {
-                outgoingHTML += `
+                outgoingBox.innerHTML = `
                     <div class="pending-box">
                         <h3>Czekam na Ciebie ♡</h3>
+
                         <p>
                             Wysłane stykniecia:
                             <strong>${outgoingPending.length}</strong>
                         </p>
+
                         <p class="small-text">
                             Gdy ${escapeHTML(partnerName)} odpowie,
                             zobaczysz tutaj aktualizację.
                         </p>
                     </div>
                 `;
+            } else {
+                outgoingBox.innerHTML = "";
             }
-
-            outgoingBox.innerHTML = outgoingHTML;
         }
 
-        outgoingAccepted.forEach(request =>
-            lastAcceptedIds.add(request.id)
-        );
-
-        outgoingDeclined.forEach(request =>
-            lastDeclinedIds.add(request.id)
-        );
-
         if (incoming.length > 0) {
-            showMessage("Masz " + incoming.length + " oczekujących stykniec ♡");
+            showMessage(
+                "Masz " + incoming.length +
+                " oczekujących stykniec ♡"
+            );
         }
 
     } finally {
@@ -828,48 +861,41 @@ async function refreshRequests(initial = false) {
 }
 
 // ===================================
-// ODPOWIEDŹ NA JEDNO STYKNIECIE
+// ZBIOROWA ODPOWIEDŹ
 // ===================================
 
-async function respondToTouch(id, accepted) {
-    const buttons = document.querySelectorAll(
-        `[data-accept="${id}"], [data-decline="${id}"]`
-    );
+async function respondToAllTouches(accepted) {
+    const acceptButton = document.querySelector("#acceptAll");
+    const declineButton = document.querySelector("#declineAll");
 
-    buttons.forEach(button => button.disabled = true);
+    if (!acceptButton || !declineButton) return;
 
-    const { error } = await db.rpc("respond_to_touch", {
-        p_request_id: id,
-        p_accept: accepted
-    });
+    acceptButton.disabled = true;
+    declineButton.disabled = true;
 
-    if (error) {
-        showMessage("Coś poszło nie tak: " + error.message);
+    // Najpierw pobieramy ID oczekujących styknieć.
+    const { data: pending, error: pendingError } = await db
+        .from("touch_requests")
+        .select("id")
+        .eq("pair_id", currentPair.id)
+        .eq("receiver_id", currentUser.id)
+        .eq("status", "pending");
+
+    if (pendingError) {
+        showMessage("Nie udało się pobrać stykniec.");
         await refreshRequests(false);
         return;
     }
 
-    if (accepted) {
-        showMessage("Stykniecie zaakceptowane ♡");
-        animateTouch();
-    } else {
-        showMessage("Stykniecie odrzucone.");
+    const requestIds = (pending || []).map(request => request.id);
+
+    if (requestIds.length === 0) {
+        showMessage("Nie ma już oczekujących stykniec.");
+        await refreshRequests(false);
+        return;
     }
 
-    await refreshRequests(false);
-}
-
-// ===================================
-// ODPOWIEDŹ NA WSZYSTKIE STYKNIECIA
-// ===================================
-
-async function respondToAllTouches(accepted) {
-    const buttons = document.querySelectorAll(
-        "#acceptAll, #declineAll"
-    );
-
-    buttons.forEach(button => button.disabled = true);
-
+    // Zmieniamy status wszystkich oczekujących.
     const { data, error } = await db.rpc(
         "respond_to_all_touches",
         {
@@ -884,12 +910,24 @@ async function respondToAllTouches(accepted) {
         return;
     }
 
+    const count = Number(data) || 0;
+
     if (accepted) {
-        showMessage("Zaakceptowano " + data + " stykniec ♡");
+        showMessage(
+            `Zaakceptowano ${count} stykniec ♡`
+        );
         animateTouch();
     } else {
-        showMessage("Odrzucono " + data + " stykniec.");
+        showMessage(
+            `Odrzucono ${count} stykniec.`
+        );
     }
+
+    // Powiadomienie dla osoby, która wysłała stykniecia.
+    await sendResponseNotification(
+        requestIds,
+        accepted ? "accepted" : "declined"
+    );
 
     await refreshRequests(false);
 }
