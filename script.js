@@ -1,9 +1,15 @@
+
 // ===================================
-// KONFIGURACJA SUPABASE
+// KONFIGURACJA
 // ===================================
 
+// WSTAW TUTAJ SWÓJ DOTYCHCZASOWY URL SUPABASE
 const SUPABASE_URL = "https://cyrrxgyqyahnxjbvgqmy.supabase.co";
+
+// WSTAW TUTAJ SWÓJ DOTYCHCZASOWY KLUCZ PUBLICZNY SUPABASE
 const SUPABASE_KEY = "sb_publishable_6eq2OFDAgjM880ulznbA6w_aHQLejom";
+
+const VAPID_PUBLIC_KEY = "BE9LN658qu3-4qMbATBP6TYBKYVHx8zL9Aus08t90m8N_ybg6B_skW0GhvQ72svGF5O3xH921igvcGcuWL-_1do";
 
 const db = supabase.createClient(
     SUPABASE_URL,
@@ -23,9 +29,10 @@ let currentPair = null;
 let partnerId = null;
 let partnerName = null;
 let channel = null;
+let swRegistration = null;
 
 // ===================================
-// STYLE DODATKOWYCH ELEMENTÓW
+// DODATKOWE STYLE
 // ===================================
 
 const extraStyles = document.createElement("style");
@@ -100,6 +107,113 @@ function showMessage(text) {
 }
 
 // ===================================
+// POWIADOMIENIA
+// ===================================
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat(
+        (4 - base64String.length % 4) % 4
+    );
+
+    const base64 = (base64String + padding)
+        .replace(/-/g, "+")
+        .replace(/_/g, "/");
+
+    const rawData = atob(base64);
+
+    return Uint8Array.from(
+        rawData,
+        char => char.charCodeAt(0)
+    );
+}
+
+async function registerServiceWorker() {
+    try {
+        swRegistration =
+            await navigator.serviceWorker.register("./sw.js");
+
+        return swRegistration;
+
+    } catch (error) {
+        console.error("Błąd service workera:", error);
+        showMessage("Nie udało się uruchomić powiadomień.");
+        return null;
+    }
+}
+
+async function enablePushNotifications() {
+    const isInstalled =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true;
+
+    if (!isInstalled) {
+        showMessage("Otwórz styknij z ikony na ekranie iPhone'a.");
+        return;
+    }
+
+    if (
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window) ||
+        !("Notification" in window)
+    ) {
+        showMessage("Ta przeglądarka nie obsługuje powiadomień.");
+        return;
+    }
+
+    try {
+        const permission = await Notification.requestPermission();
+
+        if (permission !== "granted") {
+            showMessage("Nie przyznano zgody na powiadomienia.");
+            return;
+        }
+
+        const registration = await registerServiceWorker();
+
+        if (!registration) return;
+
+        let subscription =
+            await registration.pushManager.getSubscription();
+
+        if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey:
+                    urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+            });
+        }
+
+        const { error } = await db
+            .from("push_subscriptions")
+            .upsert({
+                user_id: currentUser.id,
+                subscription: subscription.toJSON(),
+                updated_at: new Date().toISOString()
+            }, {
+                onConflict: "user_id"
+            });
+
+        if (error) throw error;
+
+        showMessage("Powiadomienia są włączone ♡");
+
+        const button =
+            document.querySelector("#enableNotifications");
+
+        if (button) {
+            button.textContent = "♡ Powiadomienia włączone";
+        }
+
+    } catch (error) {
+        console.error("Błąd powiadomień:", error);
+
+        showMessage(
+            "Nie udało się włączyć powiadomień: " + error.message
+        );
+    }
+}
+
+// ===================================
 // LOGOWANIE ANONIMOWE
 // ===================================
 
@@ -111,7 +225,8 @@ async function login() {
         return true;
     }
 
-    const { data, error } = await db.auth.signInAnonymously();
+    const { data, error } =
+        await db.auth.signInAnonymously();
 
     if (error) {
         showMessage("Nie udało się połączyć: " + error.message);
@@ -162,7 +277,9 @@ async function findPair() {
     const { data, error } = await db
         .from("pairs")
         .select("*")
-        .or(`user_one.eq.${currentUser.id},user_two.eq.${currentUser.id}`)
+        .or(
+            `user_one.eq.${currentUser.id},user_two.eq.${currentUser.id}`
+        )
         .limit(1)
         .maybeSingle();
 
@@ -187,9 +304,10 @@ async function findPair() {
         ? data.user_two
         : data.user_one;
 
-    partnerName = localStorage.getItem("styknij_profile") === "Lena"
-        ? "Maja"
-        : "Lena";
+    partnerName =
+        localStorage.getItem("styknij_profile") === "Lena"
+            ? "Maja"
+            : "Lena";
 
     startApp();
 }
@@ -242,7 +360,9 @@ async function createPair() {
     document.querySelector("#copyCode")
         .addEventListener("click", () => {
             navigator.clipboard.writeText(code);
-            document.querySelector("#copyCode").textContent = "Skopiowano!";
+
+            document.querySelector("#copyCode").textContent =
+                "Skopiowano!";
         });
 
     const check = setInterval(async () => {
@@ -310,8 +430,16 @@ function waitingScreen() {
 async function startApp() {
     showSetup(`
         <p>Połączono z ${partnerName} ♡</p>
+
+        <button id="enableNotifications">
+            ♡ Włącz powiadomienia
+        </button>
+
         <div id="incomingRequest"></div>
     `);
+
+    document.querySelector("#enableNotifications")
+        .addEventListener("click", enablePushNotifications);
 
     touchButton.disabled = false;
     touchButton.textContent = "♡ Chcę się styknąć";
@@ -346,13 +474,15 @@ async function sendTouch() {
 
     touchButton.disabled = true;
 
-    const { error } = await db
+    const { data, error } = await db
         .from("touch_requests")
         .insert({
             pair_id: currentPair.id,
             sender_id: currentUser.id,
             receiver_id: partnerId
-        });
+        })
+        .select("id")
+        .single();
 
     if (error) {
         showMessage("Nie udało się wysłać: " + error.message);
@@ -361,8 +491,26 @@ async function sendTouch() {
     }
 
     showMessage("Wysyłam Ci mały dotyk ♡");
-
     touchButton.textContent = "♡ Dotyk wysłany!";
+
+    // Wysyłanie powiadomienia przez funkcję Supabase
+
+    const { error: pushError } = await db.functions.invoke(
+        "send-touch-notification",
+        {
+            body: {
+                requestId: data.id
+            }
+        }
+    );
+
+    if (pushError) {
+        console.error("Błąd powiadomienia:", pushError);
+
+        showMessage(
+            "Dotyk wysłany, ale powiadomienie nie dotarło."
+        );
+    }
 
     setTimeout(() => {
         touchButton.disabled = false;
@@ -394,27 +542,36 @@ async function refreshRequests() {
         request.status === "accepted"
     );
 
-    const incomingBox = document.querySelector("#incomingRequest");
+    const incomingBox =
+        document.querySelector("#incomingRequest");
 
-    if (incoming) {
-        incomingBox.innerHTML = `
-            <h3>${partnerName} chce się z Tobą styknąć ♡</h3>
-            <button class="action-button" id="acceptTouch">
-                ♡ Akceptuję
-            </button>
-            <button class="action-button" id="declineTouch">
-                Odrzuć
-            </button>
-        `;
+    if (incomingBox) {
+        if (incoming) {
+            incomingBox.innerHTML = `
+                <h3>${partnerName} chce się z Tobą styknąć ♡</h3>
 
-        document.querySelector("#acceptTouch")
-            .addEventListener("click", () => respondToTouch(incoming.id, true));
+                <button class="action-button" id="acceptTouch">
+                    ♡ Akceptuję
+                </button>
 
-        document.querySelector("#declineTouch")
-            .addEventListener("click", () => respondToTouch(incoming.id, false));
+                <button class="action-button" id="declineTouch">
+                    Odrzuć
+                </button>
+            `;
 
-    } else {
-        incomingBox.innerHTML = "";
+            document.querySelector("#acceptTouch")
+                .addEventListener("click", () =>
+                    respondToTouch(incoming.id, true)
+                );
+
+            document.querySelector("#declineTouch")
+                .addEventListener("click", () =>
+                    respondToTouch(incoming.id, false)
+                );
+
+        } else {
+            incomingBox.innerHTML = "";
+        }
     }
 
     if (accepted) {
@@ -465,7 +622,7 @@ function animateTouch() {
 }
 
 // ===================================
-// START
+// START APLIKACJI
 // ===================================
 
 touchButton.addEventListener("click", sendTouch);
@@ -473,7 +630,8 @@ touchButton.addEventListener("click", sendTouch);
 async function init() {
     touchButton.disabled = true;
 
-    const savedProfile = localStorage.getItem("styknij_profile");
+    const savedProfile =
+        localStorage.getItem("styknij_profile");
 
     if (!savedProfile) {
         profileScreen();
