@@ -3,12 +3,9 @@
 // KONFIGURACJA
 // ===================================
 
-// WSTAW TUTAJ SWÓJ DOTYCHCZASOWY URL SUPABASE
+// PRZEPISZ TU SWOJE DOTYCHCZASOWE WARTOŚCI!
 const SUPABASE_URL = "https://cyrrxgyqyahnxjbvgqmy.supabase.co";
-
-// WSTAW TUTAJ SWÓJ DOTYCHCZASOWY KLUCZ PUBLICZNY SUPABASE
 const SUPABASE_KEY = "sb_publishable_6eq2OFDAgjM880ulznbA6w_aHQLejom";
-
 const VAPID_PUBLIC_KEY = "BE9LN658qu3-4qMbATBP6TYBKYVHx8zL9Aus08t90m8N_ybg6B_skW0GhvQ72svGF5O3xH921igvcGcuWL-_1do";
 
 const db = supabase.createClient(
@@ -30,6 +27,36 @@ let partnerId = null;
 let partnerName = null;
 let channel = null;
 let swRegistration = null;
+let refreshInProgress = false;
+let lastAcceptedIds = new Set();
+let lastDeclinedIds = new Set();
+let pairCheckTimer = null;
+
+// ===================================
+// PANEL APLIKACJI
+// ===================================
+
+const setup = document.createElement("div");
+setup.className = "setup";
+content.prepend(setup);
+
+function showSetup(html) {
+    setup.innerHTML = html;
+}
+
+function showMessage(text) {
+    message.textContent = text;
+}
+
+function escapeHTML(value) {
+    return String(value).replace(/[&<>"']/g, char => ({
+        "&": "&amp;",
+        "<": "&lt;",
+        ">": "&gt;",
+        '"': "&quot;",
+        "'": "&#039;"
+    })[char]);
+}
 
 // ===================================
 // DODATKOWE STYLE
@@ -39,42 +66,102 @@ const extraStyles = document.createElement("style");
 
 extraStyles.textContent = `
 .setup {
-    margin-top: 25px;
+    width: 100%;
+    margin-top: 20px;
+    text-align: center;
 }
 
-.setup button, .action-button {
+.setup button,
+.action-button {
     border: none;
     border-radius: 18px;
-    padding: 13px 20px;
-    margin: 6px;
-    background: #d9c8ef;
-    color: #514267;
-    font-size: 15px;
+    padding: 12px 17px;
+    margin: 5px;
+    background: #641f35;
+    color: white;
+    font-size: 14px;
     cursor: pointer;
 }
 
 .setup input {
     padding: 13px;
-    border: 1px solid #d9c8ef;
+    border: 1px solid #d9a6ae;
     border-radius: 12px;
     margin: 8px;
     max-width: 220px;
+    background: white;
+    color: #603c46;
 }
 
 .setup p {
-    color: #766785;
+    color: #a58b8e;
+    margin: 9px 0;
+    line-height: 1.5;
 }
 
 .setup h3 {
-    color: #665078;
+    color: #641f35;
+    margin-bottom: 10px;
 }
 
 #incomingRequest {
-    margin-top: 20px;
+    width: 100%;
+    margin-top: 18px;
     padding: 15px;
     border-radius: 18px;
-    background: #f2eafa;
-    color: #665078;
+    background: #f5e5e3;
+    color: #641f35;
+}
+
+.request-card {
+    background: #fff9f0;
+    border-radius: 14px;
+    padding: 13px;
+    margin-top: 10px;
+}
+
+.request-card p {
+    color: #603c46;
+}
+
+.request-count {
+    display: inline-block;
+    min-width: 26px;
+    padding: 5px 9px;
+    margin-left: 5px;
+    border-radius: 20px;
+    background: #641f35;
+    color: white;
+    font-weight: bold;
+}
+
+.request-actions {
+    display: flex;
+    justify-content: center;
+    flex-wrap: wrap;
+    gap: 5px;
+}
+
+.secondary-button {
+    background: #d9a6ae !important;
+    color: #481526 !important;
+}
+
+.pending-box {
+    background: #f5e5e3;
+    border-radius: 16px;
+    padding: 14px;
+    margin-top: 15px;
+    color: #641f35;
+}
+
+.pending-box p {
+    color: #603c46;
+}
+
+.small-text {
+    font-size: 12px;
+    color: #a58b8e;
 }
 
 .touching {
@@ -91,134 +178,17 @@ extraStyles.textContent = `
 document.head.appendChild(extraStyles);
 
 // ===================================
-// PANEL KONFIGURACJI
-// ===================================
-
-const setup = document.createElement("div");
-setup.className = "setup";
-content.prepend(setup);
-
-function showSetup(html) {
-    setup.innerHTML = html;
-}
-
-function showMessage(text) {
-    message.textContent = text;
-}
-
-// ===================================
-// POWIADOMIENIA
-// ===================================
-
-function urlBase64ToUint8Array(base64String) {
-    const padding = "=".repeat(
-        (4 - base64String.length % 4) % 4
-    );
-
-    const base64 = (base64String + padding)
-        .replace(/-/g, "+")
-        .replace(/_/g, "/");
-
-    const rawData = atob(base64);
-
-    return Uint8Array.from(
-        rawData,
-        char => char.charCodeAt(0)
-    );
-}
-
-async function registerServiceWorker() {
-    try {
-        swRegistration =
-            await navigator.serviceWorker.register("./sw.js");
-
-        return swRegistration;
-
-    } catch (error) {
-        console.error("Błąd service workera:", error);
-        showMessage("Nie udało się uruchomić powiadomień.");
-        return null;
-    }
-}
-
-async function enablePushNotifications() {
-    const isInstalled =
-        window.matchMedia("(display-mode: standalone)").matches ||
-        window.navigator.standalone === true;
-
-    if (!isInstalled) {
-        showMessage("Otwórz styknij z ikony na ekranie iPhone'a.");
-        return;
-    }
-
-    if (
-        !("serviceWorker" in navigator) ||
-        !("PushManager" in window) ||
-        !("Notification" in window)
-    ) {
-        showMessage("Ta przeglądarka nie obsługuje powiadomień.");
-        return;
-    }
-
-    try {
-        const permission = await Notification.requestPermission();
-
-        if (permission !== "granted") {
-            showMessage("Nie przyznano zgody na powiadomienia.");
-            return;
-        }
-
-        const registration = await registerServiceWorker();
-
-        if (!registration) return;
-
-        let subscription =
-            await registration.pushManager.getSubscription();
-
-        if (!subscription) {
-            subscription = await registration.pushManager.subscribe({
-                userVisibleOnly: true,
-                applicationServerKey:
-                    urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
-            });
-        }
-
-        const { error } = await db
-            .from("push_subscriptions")
-            .upsert({
-                user_id: currentUser.id,
-                subscription: subscription.toJSON(),
-                updated_at: new Date().toISOString()
-            }, {
-                onConflict: "user_id"
-            });
-
-        if (error) throw error;
-
-        showMessage("Powiadomienia są włączone ♡");
-
-        const button =
-            document.querySelector("#enableNotifications");
-
-        if (button) {
-            button.textContent = "♡ Powiadomienia włączone";
-        }
-
-    } catch (error) {
-        console.error("Błąd powiadomień:", error);
-
-        showMessage(
-            "Nie udało się włączyć powiadomień: " + error.message
-        );
-    }
-}
-
-// ===================================
 // LOGOWANIE ANONIMOWE
 // ===================================
 
 async function login() {
-    const { data: sessionData } = await db.auth.getSession();
+    const { data: sessionData, error: sessionError } =
+        await db.auth.getSession();
+
+    if (sessionError) {
+        showMessage("Problem z sesją: " + sessionError.message);
+        return false;
+    }
 
     if (sessionData.session) {
         currentUser = sessionData.session.user;
@@ -270,7 +240,7 @@ function profileScreen() {
 }
 
 // ===================================
-// SZUKANIE PARY
+// WYSZUKIWANIE PARY
 // ===================================
 
 async function findPair() {
@@ -284,7 +254,7 @@ async function findPair() {
         .maybeSingle();
 
     if (error) {
-        showMessage("Błąd: " + error.message);
+        showMessage("Błąd połączenia: " + error.message);
         return;
     }
 
@@ -309,17 +279,17 @@ async function findPair() {
             ? "Maja"
             : "Lena";
 
-    startApp();
+    await startApp();
 }
 
 // ===================================
-// TWORZENIE LUB DOŁĄCZANIE DO PARY
+// PAROWANIE
 // ===================================
 
 function pairingScreen() {
     showSetup(`
         <h3>Połączmy telefony ♡</h3>
-        <p>Możesz utworzyć kod zaproszenia albo wpisać kod drugiej osoby.</p>
+        <p>Utwórz kod zaproszenia albo wpisz kod drugiej osoby.</p>
 
         <button id="createPair">Utwórz kod</button>
 
@@ -352,20 +322,25 @@ async function createPair() {
     showSetup(`
         <h3>Twój kod zaproszenia ♡</h3>
         <p>Przekaż go drugiej osobie:</p>
-        <h2>${code}</h2>
+        <h2>${escapeHTML(code)}</h2>
         <button id="copyCode">Kopiuj kod</button>
         <p>Czekam, aż druga osoba dołączy...</p>
     `);
 
     document.querySelector("#copyCode")
-        .addEventListener("click", () => {
-            navigator.clipboard.writeText(code);
-
-            document.querySelector("#copyCode").textContent =
-                "Skopiowano!";
+        .addEventListener("click", async () => {
+            try {
+                await navigator.clipboard.writeText(code);
+                document.querySelector("#copyCode").textContent =
+                    "Skopiowano!";
+            } catch {
+                showMessage("Nie udało się skopiować kodu.");
+            }
         });
 
-    const check = setInterval(async () => {
+    if (pairCheckTimer) clearInterval(pairCheckTimer);
+
+    pairCheckTimer = setInterval(async () => {
         const { data } = await db
             .from("pairs")
             .select("*")
@@ -373,7 +348,8 @@ async function createPair() {
             .maybeSingle();
 
         if (data && data.user_two) {
-            clearInterval(check);
+            clearInterval(pairCheckTimer);
+            pairCheckTimer = null;
             await findPair();
         }
     }, 3000);
@@ -406,10 +382,12 @@ function waitingScreen() {
     showSetup(`
         <h3>Czekamy na drugą osobę ♡</h3>
         <p>Przekaż jej swój kod zaproszenia.</p>
-        <p>Ta strona sprawdzi automatycznie, kiedy dołączy.</p>
+        <p>Sprawdzam automatycznie, czy dołączyła.</p>
     `);
 
-    const check = setInterval(async () => {
+    if (pairCheckTimer) clearInterval(pairCheckTimer);
+
+    pairCheckTimer = setInterval(async () => {
         const { data } = await db
             .from("pairs")
             .select("*")
@@ -417,10 +395,163 @@ function waitingScreen() {
             .maybeSingle();
 
         if (data && data.user_two) {
-            clearInterval(check);
+            clearInterval(pairCheckTimer);
+            pairCheckTimer = null;
             await findPair();
         }
     }, 3000);
+}
+
+// ===================================
+// POWIADOMIENIA
+// ===================================
+
+function urlBase64ToUint8Array(base64String) {
+    const padding = "=".repeat(
+        (4 - base64String.length % 4) % 4
+    );
+
+    const base64 = (base64String + padding)
+        .replace(/-/g, "+")
+        .replace(/_/g, "/");
+
+    const rawData = atob(base64);
+
+    return Uint8Array.from(
+        rawData,
+        char => char.charCodeAt(0)
+    );
+}
+
+async function registerServiceWorker() {
+    try {
+        swRegistration =
+            await navigator.serviceWorker.register("./sw.js");
+
+        return swRegistration;
+    } catch (error) {
+        console.error("Błąd service workera:", error);
+        showMessage("Nie udało się uruchomić powiadomień.");
+        return null;
+    }
+}
+
+async function checkNotifications() {
+    const button = document.querySelector("#enableNotifications");
+
+    if (!button) return;
+
+    if (
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window) ||
+        !("Notification" in window)
+    ) {
+        button.style.display = "none";
+        return;
+    }
+
+    if (Notification.permission !== "granted") {
+        return;
+    }
+
+    try {
+        const registration = await registerServiceWorker();
+        if (!registration) return;
+
+        const subscription =
+            await registration.pushManager.getSubscription();
+
+        if (!subscription) return;
+
+        const { error } = await db
+            .from("push_subscriptions")
+            .upsert({
+                user_id: currentUser.id,
+                subscription: subscription.toJSON(),
+                updated_at: new Date().toISOString()
+            }, {
+                onConflict: "user_id"
+            });
+
+        if (error) throw error;
+
+        button.textContent = "♡ Powiadomienia włączone";
+        button.disabled = true;
+        button.style.display = "none";
+
+    } catch (error) {
+        console.error("Sprawdzanie powiadomień:", error);
+    }
+}
+
+async function enablePushNotifications() {
+    const isInstalled =
+        window.matchMedia("(display-mode: standalone)").matches ||
+        window.navigator.standalone === true;
+
+    if (!isInstalled) {
+        showMessage("Otwórz styknij z ikony na ekranie iPhone'a.");
+        return;
+    }
+
+    if (
+        !("serviceWorker" in navigator) ||
+        !("PushManager" in window) ||
+        !("Notification" in window)
+    ) {
+        showMessage("Ta przeglądarka nie obsługuje powiadomień.");
+        return;
+    }
+
+    try {
+        const permission = await Notification.requestPermission();
+
+        if (permission !== "granted") {
+            showMessage("Nie przyznano zgody na powiadomienia.");
+            return;
+        }
+
+        const registration = await registerServiceWorker();
+        if (!registration) return;
+
+        let subscription =
+            await registration.pushManager.getSubscription();
+
+        if (!subscription) {
+            subscription = await registration.pushManager.subscribe({
+                userVisibleOnly: true,
+                applicationServerKey:
+                    urlBase64ToUint8Array(VAPID_PUBLIC_KEY)
+            });
+        }
+
+        const { error } = await db
+            .from("push_subscriptions")
+            .upsert({
+                user_id: currentUser.id,
+                subscription: subscription.toJSON(),
+                updated_at: new Date().toISOString()
+            }, {
+                onConflict: "user_id"
+            });
+
+        if (error) throw error;
+
+        const button =
+            document.querySelector("#enableNotifications");
+
+        if (button) {
+            button.textContent = "♡ Powiadomienia włączone";
+            button.disabled = true;
+            button.style.display = "none";
+        }
+
+        showMessage("Powiadomienia są włączone ♡");
+
+    } catch (error) {
+        console.error("Błąd powiadomień:", error);
+        showMessage("Nie udało się włączyć powiadomień: " + error.message);
+    }
 }
 
 // ===================================
@@ -428,14 +559,25 @@ function waitingScreen() {
 // ===================================
 
 async function startApp() {
+    if (pairCheckTimer) {
+        clearInterval(pairCheckTimer);
+        pairCheckTimer = null;
+    }
+
+    if (channel) {
+        await db.removeChannel(channel);
+        channel = null;
+    }
+
     showSetup(`
-        <p>Połączono z ${partnerName} ♡</p>
+        <p>Połączono z ${escapeHTML(partnerName)} ♡</p>
 
         <button id="enableNotifications">
             ♡ Włącz powiadomienia
         </button>
 
         <div id="incomingRequest"></div>
+        <div id="outgoingRequest"></div>
     `);
 
     document.querySelector("#enableNotifications")
@@ -444,9 +586,10 @@ async function startApp() {
     touchButton.disabled = false;
     touchButton.textContent = "♡ Chcę się styknąć";
 
-    showMessage("Możecie już wysyłać sobie dotyki ♡");
+    showMessage("Możecie już wysyłać sobie stykniecia ♡");
 
-    await refreshRequests();
+    await checkNotifications();
+    await refreshRequests(true);
 
     channel = db
         .channel("touch-" + currentPair.id)
@@ -459,18 +602,18 @@ async function startApp() {
                 filter: "pair_id=eq." + currentPair.id
             },
             async () => {
-                await refreshRequests();
+                await refreshRequests(false);
             }
         )
         .subscribe();
 }
 
 // ===================================
-// WYSYŁANIE DOTYKU
+// WYSYŁANIE STYKNIECIA
 // ===================================
 
 async function sendTouch() {
-    if (!partnerId) return;
+    if (!partnerId || !currentPair || touchButton.disabled) return;
 
     touchButton.disabled = true;
 
@@ -490,97 +633,227 @@ async function sendTouch() {
         return;
     }
 
-    showMessage("Wysyłam Ci mały dotyk ♡");
-    touchButton.textContent = "♡ Dotyk wysłany!";
+    showMessage("Wysłano stykniecie ♡");
+    touchButton.textContent = "♡ Stykniecie wysłane!";
 
-    // Wysyłanie powiadomienia przez funkcję Supabase
-
+    // Powiadomienie dla drugiej osoby.
     const { error: pushError } = await db.functions.invoke(
         "send-touch-notification",
         {
             body: {
-                requestId: data.id
+                requestId: data.id,
+                senderName: localStorage.getItem("styknij_profile")
             }
         }
     );
 
     if (pushError) {
         console.error("Błąd powiadomienia:", pushError);
-
-        showMessage(
-            "Dotyk wysłany, ale powiadomienie nie dotarło."
-        );
+        showMessage("Stykniecie wysłane, ale powiadomienie nie dotarło.");
     }
+
+    await refreshRequests(false);
 
     setTimeout(() => {
         touchButton.disabled = false;
         touchButton.textContent = "♡ Chcę się styknąć";
-    }, 3000);
+    }, 1500);
 }
 
 // ===================================
-// ODBIERANIE I AKCEPTOWANIE DOTYKU
+// ODSWIEŻANIE STYKNIEC
 // ===================================
 
-async function refreshRequests() {
-    const { data, error } = await db
-        .from("touch_requests")
-        .select("*")
-        .eq("pair_id", currentPair.id)
-        .order("created_at", { ascending: false })
-        .limit(10);
+async function refreshRequests(initial = false) {
+    if (!currentPair || refreshInProgress) return;
 
-    if (error || !data) return;
+    refreshInProgress = true;
 
-    const incoming = data.find(request =>
-        request.receiver_id === currentUser.id &&
-        request.status === "pending"
-    );
+    try {
+        const { data, error } = await db
+            .from("touch_requests")
+            .select("*")
+            .eq("pair_id", currentPair.id)
+            .order("created_at", { ascending: false });
 
-    const accepted = data.find(request =>
-        request.sender_id === currentUser.id &&
-        request.status === "accepted"
-    );
-
-    const incomingBox =
-        document.querySelector("#incomingRequest");
-
-    if (incomingBox) {
-        if (incoming) {
-            incomingBox.innerHTML = `
-                <h3>${partnerName} chce się z Tobą styknąć ♡</h3>
-
-                <button class="action-button" id="acceptTouch">
-                    ♡ Akceptuję
-                </button>
-
-                <button class="action-button" id="declineTouch">
-                    Odrzuć
-                </button>
-            `;
-
-            document.querySelector("#acceptTouch")
-                .addEventListener("click", () =>
-                    respondToTouch(incoming.id, true)
-                );
-
-            document.querySelector("#declineTouch")
-                .addEventListener("click", () =>
-                    respondToTouch(incoming.id, false)
-                );
-
-        } else {
-            incomingBox.innerHTML = "";
+        if (error) {
+            console.error("Błąd pobierania stykniec:", error);
+            showMessage("Nie udało się odświeżyć stykniec.");
+            return;
         }
-    }
 
-    if (accepted) {
-        showMessage(partnerName + " zaakceptowała dotyk ♡");
-        animateTouch();
+        const requests = data || [];
+
+        const incoming = requests.filter(request =>
+            request.receiver_id === currentUser.id &&
+            request.status === "pending"
+        );
+
+        const outgoingPending = requests.filter(request =>
+            request.sender_id === currentUser.id &&
+            request.status === "pending"
+        );
+
+        const outgoingAccepted = requests.filter(request =>
+            request.sender_id === currentUser.id &&
+            request.status === "accepted"
+        );
+
+        const outgoingDeclined = requests.filter(request =>
+            request.sender_id === currentUser.id &&
+            request.status === "declined"
+        );
+
+        const incomingBox =
+            document.querySelector("#incomingRequest");
+
+        if (incomingBox) {
+            if (incoming.length > 0) {
+                incomingBox.innerHTML = `
+                    <h3>
+                        ${escapeHTML(partnerName)} chce się z Tobą styknąć
+                        <span class="request-count">${incoming.length}</span>
+                    </h3>
+
+                    <p>Masz ${incoming.length} oczekujących stykniec ♡</p>
+
+                    <div class="request-actions">
+                        <button id="acceptAll">♡ Akceptuj wszystkie</button>
+                        <button id="declineAll" class="secondary-button">
+                            Odrzuć wszystkie
+                        </button>
+                    </div>
+
+                    <div>
+                        ${incoming.map((request, index) => `
+                            <div class="request-card">
+                                <p>Stykniecie ${incoming.length - index}</p>
+                                <div class="request-actions">
+                                    <button class="action-button"
+                                        data-accept="${request.id}">
+                                        ♡ Akceptuję
+                                    </button>
+                                    <button class="action-button secondary-button"
+                                        data-decline="${request.id}">
+                                        Odrzuć
+                                    </button>
+                                </div>
+                            </div>
+                        `).join("")}
+                    </div>
+                `;
+
+                document.querySelector("#acceptAll")
+                    .addEventListener("click", () =>
+                        respondToAllTouches(true)
+                    );
+
+                document.querySelector("#declineAll")
+                    .addEventListener("click", () =>
+                        respondToAllTouches(false)
+                    );
+
+                incomingBox.querySelectorAll("[data-accept]")
+                    .forEach(button => {
+                        button.addEventListener("click", () =>
+                            respondToTouch(button.dataset.accept, true)
+                        );
+                    });
+
+                incomingBox.querySelectorAll("[data-decline]")
+                    .forEach(button => {
+                        button.addEventListener("click", () =>
+                            respondToTouch(button.dataset.decline, false)
+                        );
+                    });
+
+            } else {
+                incomingBox.innerHTML = "";
+            }
+        }
+
+        const outgoingBox =
+            document.querySelector("#outgoingRequest");
+
+        if (outgoingBox) {
+            let outgoingHTML = "";
+
+            if (outgoingPending.length > 0) {
+                outgoingHTML += `
+                    <div class="pending-box">
+                        <h3>Czekam na Ciebie ♡</h3>
+                        <p>
+                            Wysłane stykniecia:
+                            <strong>${outgoingPending.length}</strong>
+                        </p>
+                        <p class="small-text">
+                            Gdy ${escapeHTML(partnerName)} odpowie,
+                            zobaczysz tutaj aktualizację.
+                        </p>
+                    </div>
+                `;
+            }
+
+            if (outgoingAccepted.length > 0) {
+                const newestAccepted = outgoingAccepted[0];
+
+                outgoingHTML += `
+                    <div class="pending-box">
+                        <p>♡ ${escapeHTML(partnerName)} zaakceptowała stykniecie!</p>
+                    </div>
+                `;
+
+                if (!initial && !lastAcceptedIds.has(newestAccepted.id)) {
+                    animateTouch();
+                    showMessage(partnerName + " zaakceptowała stykniecie ♡");
+                }
+            }
+
+            if (outgoingDeclined.length > 0) {
+                const newestDeclined = outgoingDeclined[0];
+
+                outgoingHTML += `
+                    <div class="pending-box">
+                        <p>${escapeHTML(partnerName)} tym razem odrzuciła stykniecie.</p>
+                    </div>
+                `;
+
+                if (!initial && !lastDeclinedIds.has(newestDeclined.id)) {
+                    showMessage(partnerName + " odpowiedziała na stykniecie.");
+                }
+            }
+
+            outgoingBox.innerHTML = outgoingHTML;
+        }
+
+        outgoingAccepted.forEach(request =>
+            lastAcceptedIds.add(request.id)
+        );
+
+        outgoingDeclined.forEach(request =>
+            lastDeclinedIds.add(request.id)
+        );
+
+        if (incoming.length > 0) {
+            showMessage("Masz " + incoming.length + " oczekujących stykniec ♡");
+        }
+
+    } finally {
+        refreshInProgress = false;
     }
 }
+
+// ===================================
+// ODPOWIEDŹ NA JEDNO STYKNIECIE
+// ===================================
 
 async function respondToTouch(id, accepted) {
+    const buttons = document.querySelectorAll(
+        `[data-accept="${id}"], [data-decline="${id}"]`
+    );
+
+    buttons.forEach(button => button.disabled = true);
+
     const { error } = await db.rpc("respond_to_touch", {
         p_request_id: id,
         p_accept: accepted
@@ -588,17 +861,53 @@ async function respondToTouch(id, accepted) {
 
     if (error) {
         showMessage("Coś poszło nie tak: " + error.message);
+        await refreshRequests(false);
         return;
     }
 
     if (accepted) {
-        showMessage("Dotyk zaakceptowany ♡");
+        showMessage("Stykniecie zaakceptowane ♡");
         animateTouch();
     } else {
-        showMessage("Tym razem bez dotyku ♡");
+        showMessage("Stykniecie odrzucone.");
     }
 
-    await refreshRequests();
+    await refreshRequests(false);
+}
+
+// ===================================
+// ODPOWIEDŹ NA WSZYSTKIE STYKNIECIA
+// ===================================
+
+async function respondToAllTouches(accepted) {
+    const buttons = document.querySelectorAll(
+        "#acceptAll, #declineAll"
+    );
+
+    buttons.forEach(button => button.disabled = true);
+
+    const { data, error } = await db.rpc(
+        "respond_to_all_touches",
+        {
+            p_pair_id: currentPair.id,
+            p_accept: accepted
+        }
+    );
+
+    if (error) {
+        showMessage("Nie udało się wykonać operacji: " + error.message);
+        await refreshRequests(false);
+        return;
+    }
+
+    if (accepted) {
+        showMessage("Zaakceptowano " + data + " stykniec ♡");
+        animateTouch();
+    } else {
+        showMessage("Odrzucono " + data + " stykniec.");
+    }
+
+    await refreshRequests(false);
 }
 
 // ===================================
@@ -622,7 +931,7 @@ function animateTouch() {
 }
 
 // ===================================
-// START APLIKACJI
+// START
 // ===================================
 
 touchButton.addEventListener("click", sendTouch);
