@@ -3,7 +3,7 @@
 // KONFIGURACJA
 // ===================================
 
-// ZACHOWAJ SWOJE DOTYCHCZASOWE WARTOŚCI!
+// WSTAW SWOJE DOTYCHCZASOWE WARTOŚCI
 const SUPABASE_URL = "https://cyrrxgyqyahnxjbvgqmy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_6eq2OFDAgjM880ulznbA6w_aHQLejom";
 const VAPID_PUBLIC_KEY = "BE9LN658qu3-4qMbATBP6TYBKYVHx8zL9Aus08t90m8N_ybg6B_skW0GhvQ72svGF5O3xH921igvcGcuWL-_1do";
@@ -30,8 +30,8 @@ let swRegistration = null;
 let refreshInProgress = false;
 let pairCheckTimer = null;
 
-// Zapamiętujemy stykniecia, które czekały na odpowiedź.
 let previousOutgoingPendingIds = null;
+let previousIncomingPendingIds = null;
 
 let messageTimer = null;
 
@@ -444,7 +444,11 @@ function urlBase64ToUint8Array(base64String) {
 async function registerServiceWorker() {
     try {
         swRegistration =
-            await navigator.serviceWorker.register("./sw.js");
+            await navigator.serviceWorker.register("./sw.js", {
+                updateViaCache: "none"
+            });
+
+        await swRegistration.update();
 
         return swRegistration;
     } catch (error) {
@@ -569,7 +573,7 @@ async function enablePushNotifications() {
 }
 
 // ===================================
-// WYSYŁANIE POWIADOMIENIA O ODPOWIEDZI
+// POWIADOMIENIE O ODPOWIEDZI
 // ===================================
 
 async function sendResponseNotification(requestIds, status) {
@@ -607,6 +611,7 @@ async function startApp() {
     }
 
     previousOutgoingPendingIds = null;
+    previousIncomingPendingIds = null;
 
     showSetup(`
         <p>Połączono z ${escapeHTML(partnerName)} ♡</p>
@@ -731,13 +736,18 @@ async function refreshRequests(initial = false) {
             request.status === "pending"
         );
 
-        // Wykrywanie nowych odpowiedzi po stronie nadawcy.
-        const currentPendingIds = new Set(
+        const currentIncomingIds = new Set(
+            incoming.map(request => request.id)
+        );
+
+        const currentOutgoingIds = new Set(
             outgoingPending.map(request => request.id)
         );
 
-        if (previousOutgoingPendingIds !== null && !initial) {
-            const newlyResolved = requests.filter(request =>
+        // Wykrywanie nowych odpowiedzi u osoby wysyłającej.
+        const newlyResolved = previousOutgoingPendingIds === null
+            ? []
+            : requests.filter(request =>
                 previousOutgoingPendingIds.has(request.id) &&
                 request.sender_id === currentUser.id &&
                 (
@@ -746,40 +756,64 @@ async function refreshRequests(initial = false) {
                 )
             );
 
-            if (newlyResolved.length > 0) {
-                const acceptedCount = newlyResolved.filter(
-                    request => request.status === "accepted"
-                ).length;
+        // Wykrywanie nowych stykniec u osoby otrzymującej.
+        const newlyReceived = previousIncomingPendingIds === null
+            ? []
+            : incoming.filter(request =>
+                !previousIncomingPendingIds.has(request.id)
+            );
 
-                const declinedCount = newlyResolved.filter(
-                    request => request.status === "declined"
-                ).length;
+        previousOutgoingPendingIds = currentOutgoingIds;
+        previousIncomingPendingIds = currentIncomingIds;
 
-                if (acceptedCount > 0 && declinedCount === 0) {
-                    showMessage(
-                        `${partnerName} zaakceptowała Twoje ` +
-                        `${acceptedCount === 1 ? "stykniecie" : "stykniecia"} ♡`
-                    );
+        // Najpierw komunikat o odpowiedzi.
+        // Nie pozwalamy, żeby licznik go nadpisał.
+        if (newlyResolved.length > 0) {
+            const acceptedCount = newlyResolved.filter(
+                request => request.status === "accepted"
+            ).length;
 
-                    animateTouch();
+            const declinedCount = newlyResolved.filter(
+                request => request.status === "declined"
+            ).length;
 
-                } else if (declinedCount > 0 && acceptedCount === 0) {
-                    showMessage(
-                        `${partnerName} tym razem odrzuciła Twoje ` +
-                        `${declinedCount === 1 ? "stykniecie" : "stykniecia"}`
-                    );
+            if (acceptedCount > 0 && declinedCount === 0) {
+                const text = acceptedCount === 1
+                    ? `${partnerName} zaakceptowała Twoje stykniecie ♡`
+                    : `${partnerName} zaakceptowała ${acceptedCount} styknieć ♡`;
 
-                } else {
-                    showMessage(
-                        `${partnerName} odpowiedziała na Twoje stykniecia ♡`
-                    );
-                }
+                showMessage(text);
+                animateTouch();
+
+            } else if (declinedCount > 0 && acceptedCount === 0) {
+                const text = declinedCount === 1
+                    ? `${partnerName} tym razem odrzuciła Twoje stykniecie.`
+                    : `${partnerName} tym razem odrzuciła ${declinedCount} styknieć.`;
+
+                showMessage(text);
+
+            } else {
+                showMessage(
+                    `${partnerName} odpowiedziała na Twoje stykniecia ♡`
+                );
             }
+
+        } else if (newlyReceived.length > 0) {
+            showMessage(
+                `Masz nowe stykniecie od ${partnerName} ♡`
+            );
+
+        } else if (initial && incoming.length > 0) {
+            showMessage(
+                "Masz " + incoming.length +
+                " oczekujących stykniec ♡"
+            );
         }
 
-        previousOutgoingPendingIds = currentPendingIds;
+        // ===================================
+        // JEDNA ZBIORCZA KARTA OTRZYMANYCH STYKNIEC
+        // ===================================
 
-        // KARTA OTRZYMANYCH STYKNIEC
         const incomingBox =
             document.querySelector("#incomingRequest");
 
@@ -822,7 +856,10 @@ async function refreshRequests(initial = false) {
             }
         }
 
-        // KARTA WYSŁANYCH STYKNIEC
+        // ===================================
+        // WYSŁANE STYKNIECIA
+        // ===================================
+
         const outgoingBox =
             document.querySelector("#outgoingRequest");
 
@@ -848,13 +885,6 @@ async function refreshRequests(initial = false) {
             }
         }
 
-        if (incoming.length > 0) {
-            showMessage(
-                "Masz " + incoming.length +
-                " oczekujących stykniec ♡"
-            );
-        }
-
     } finally {
         refreshInProgress = false;
     }
@@ -873,7 +903,7 @@ async function respondToAllTouches(accepted) {
     acceptButton.disabled = true;
     declineButton.disabled = true;
 
-    // Najpierw pobieramy ID oczekujących styknieć.
+    // Pobieramy ID oczekujących styknieć.
     const { data: pending, error: pendingError } = await db
         .from("touch_requests")
         .select("id")
@@ -912,22 +942,47 @@ async function respondToAllTouches(accepted) {
 
     const count = Number(data) || 0;
 
+    if (count === 0) {
+        showMessage("Nie było już oczekujących stykniec.");
+        await refreshRequests(false);
+        return;
+    }
+
     if (accepted) {
         showMessage(
-            `Zaakceptowano ${count} stykniec ♡`
+            count === 1
+                ? "Zaakceptowano stykniecie ♡"
+                : `Zaakceptowano ${count} styknieć ♡`
         );
+
         animateTouch();
+
     } else {
         showMessage(
-            `Odrzucono ${count} stykniec.`
+            count === 1
+                ? "Odrzucono stykniecie."
+                : `Odrzucono ${count} styknieć.`
         );
     }
 
-    // Powiadomienie dla osoby, która wysłała stykniecia.
-    await sendResponseNotification(
-        requestIds,
-        accepted ? "accepted" : "declined"
-    );
+    // Sprawdzamy, które stykniecia faktycznie zmieniły status.
+    const expectedStatus = accepted ? "accepted" : "declined";
+
+    const { data: resolved, error: resolvedError } = await db
+        .from("touch_requests")
+        .select("id")
+        .in("id", requestIds)
+        .eq("receiver_id", currentUser.id)
+        .eq("status", expectedStatus);
+
+    if (resolvedError) {
+        console.error("Nie udało się sprawdzić odpowiedzi:", resolvedError);
+    } else {
+        await sendResponseNotification(
+            (resolved || []).map(request => request.id),
+            expectedStatus
+        );
+    }
 
     await refreshRequests(false);
 }
