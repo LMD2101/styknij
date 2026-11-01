@@ -44,8 +44,21 @@ function showSetup(html) {
     setup.innerHTML = html;
 }
 
+let messageTimer = null;
+
 function showMessage(text) {
     message.textContent = text;
+
+    if (messageTimer) {
+        clearTimeout(messageTimer);
+    }
+
+    if (!text) return;
+
+    messageTimer = setTimeout(() => {
+        message.textContent = "";
+        messageTimer = null;
+    }, 5000);
 }
 
 function escapeHTML(value) {
@@ -792,35 +805,6 @@ async function refreshRequests(initial = false) {
                         </p>
                     </div>
                 `;
-            }
-
-            if (outgoingAccepted.length > 0) {
-                const newestAccepted = outgoingAccepted[0];
-
-                outgoingHTML += `
-                    <div class="pending-box">
-                        <p>♡ ${escapeHTML(partnerName)} zaakceptowała stykniecie!</p>
-                    </div>
-                `;
-
-                if (!initial && !lastAcceptedIds.has(newestAccepted.id)) {
-                    animateTouch();
-                    showMessage(partnerName + " zaakceptowała stykniecie ♡");
-                }
-            }
-
-            if (outgoingDeclined.length > 0) {
-                const newestDeclined = outgoingDeclined[0];
-
-                outgoingHTML += `
-                    <div class="pending-box">
-                        <p>${escapeHTML(partnerName)} tym razem odrzuciła stykniecie.</p>
-                    </div>
-                `;
-
-                if (!initial && !lastDeclinedIds.has(newestDeclined.id)) {
-                    showMessage(partnerName + " odpowiedziała na stykniecie.");
-                }
             }
 
             outgoingBox.innerHTML = outgoingHTML;
