@@ -1,25 +1,25 @@
-
 <!DOCTYPE html>
 <html lang="pl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="theme-color" content="#f5effb">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="default">
+    <meta name="apple-mobile-web-app-title" content="styknij">
+    <link rel="manifest" href="./manifest.json">
     <title>styknij ♡</title>
     <link rel="stylesheet" href="style.css">
 </head>
 <body>
 
     <main class="app">
-
         <div class="top">
             <span class="logo">styknij.</span>
-            <span class="status">
-                <span class="dot"></span> online
-            </span>
+            <span class="status"><span class="dot"></span> online</span>
         </div>
 
         <section class="content">
-
             <h1>Lena <span>♡</span> Maja</h1>
 
             <div class="hands">
@@ -30,14 +30,9 @@
 
             <h2>Masz ochotę się<br>styknąć?</h2>
 
-            <button id="touchButton">
-                ♡ Chcę się styknąć
-            </button>
-
+            <button id="touchButton">♡ Chcę się styknąć</button>
             <p id="message"></p>
-
         </section>
-
     </main>
 
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
