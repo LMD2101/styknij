@@ -3,7 +3,6 @@
 // KONFIGURACJA
 // ===================================
 
-// WSTAW SWOJE DOTYCHCZASOWE WARTOŚCI
 const SUPABASE_URL = "https://cyrrxgyqyahnxjbvgqmy.supabase.co";
 const SUPABASE_KEY = "sb_publishable_6eq2OFDAgjM880ulznbA6w_aHQLejom";
 const VAPID_PUBLIC_KEY = "BE9LN658qu3-4qMbATBP6TYBKYVHx8zL9Aus08t90m8N_ybg6B_skW0GhvQ72svGF5O3xH921igvcGcuWL-_1do";
@@ -34,6 +33,43 @@ let previousOutgoingPendingIds = null;
 let previousIncomingPendingIds = null;
 
 let messageTimer = null;
+
+// ===================================
+// ZAPIS OCZEKUJĄCYCH STYKNIEC
+// ===================================
+
+function getPendingStorageKey() {
+    return `styknij_pending_${currentPair.id}_${currentUser.id}`;
+}
+
+function loadPreviousPendingIds() {
+    try {
+        const saved = localStorage.getItem(getPendingStorageKey());
+
+        if (!saved) return null;
+
+        const ids = JSON.parse(saved);
+
+        if (!Array.isArray(ids)) return null;
+
+        return new Set(ids);
+
+    } catch (error) {
+        console.error("Błąd odczytu zapisanych stykniec:", error);
+        return null;
+    }
+}
+
+function savePreviousPendingIds(ids) {
+    try {
+        localStorage.setItem(
+            getPendingStorageKey(),
+            JSON.stringify([...ids])
+        );
+    } catch (error) {
+        console.error("Błąd zapisu stykniec:", error);
+    }
+}
 
 // ===================================
 // KOMUNIKATY
@@ -451,6 +487,7 @@ async function registerServiceWorker() {
         await swRegistration.update();
 
         return swRegistration;
+
     } catch (error) {
         console.error("Błąd service workera:", error);
         showMessage("Nie udało się uruchomić powiadomień.");
@@ -610,7 +647,9 @@ async function startApp() {
         channel = null;
     }
 
-    previousOutgoingPendingIds = null;
+    // Odczytujemy zapisane wcześniej oczekujące stykniecia.
+    // Dzięki temu wykryjemy odpowiedź również po zamknięciu aplikacji.
+    previousOutgoingPendingIds = loadPreviousPendingIds();
     previousIncomingPendingIds = null;
 
     showSetup(`
@@ -629,8 +668,6 @@ async function startApp() {
 
     touchButton.disabled = false;
     touchButton.textContent = "♡ Chcę się styknąć";
-
-    showMessage("Możecie już wysyłać sobie stykniecia ♡");
 
     await checkNotifications();
     await refreshRequests(true);
@@ -744,7 +781,7 @@ async function refreshRequests(initial = false) {
             outgoingPending.map(request => request.id)
         );
 
-        // Wykrywanie nowych odpowiedzi u osoby wysyłającej.
+        // Sprawdzamy, czy któreś wysłane stykniecie zmieniło status.
         const newlyResolved = previousOutgoingPendingIds === null
             ? []
             : requests.filter(request =>
@@ -756,18 +793,20 @@ async function refreshRequests(initial = false) {
                 )
             );
 
-        // Wykrywanie nowych stykniec u osoby otrzymującej.
+        // Sprawdzamy, czy pojawiły się nowe stykniecia.
         const newlyReceived = previousIncomingPendingIds === null
             ? []
             : incoming.filter(request =>
                 !previousIncomingPendingIds.has(request.id)
             );
 
+        // Zapisujemy aktualny stan na urządzeniu.
         previousOutgoingPendingIds = currentOutgoingIds;
         previousIncomingPendingIds = currentIncomingIds;
 
-        // Najpierw komunikat o odpowiedzi.
-        // Nie pozwalamy, żeby licznik go nadpisał.
+        savePreviousPendingIds(currentOutgoingIds);
+
+        // Komunikat o odpowiedzi ma pierwszeństwo.
         if (newlyResolved.length > 0) {
             const acceptedCount = newlyResolved.filter(
                 request => request.status === "accepted"
@@ -778,19 +817,20 @@ async function refreshRequests(initial = false) {
             ).length;
 
             if (acceptedCount > 0 && declinedCount === 0) {
-                const text = acceptedCount === 1
-                    ? `${partnerName} zaakceptowała Twoje stykniecie ♡`
-                    : `${partnerName} zaakceptowała ${acceptedCount} styknieć ♡`;
+                showMessage(
+                    acceptedCount === 1
+                        ? `${partnerName} zaakceptowała Twoje stykniecie ♡`
+                        : `${partnerName} zaakceptowała ${acceptedCount} Twoje stykniecia ♡`
+                );
 
-                showMessage(text);
                 animateTouch();
 
             } else if (declinedCount > 0 && acceptedCount === 0) {
-                const text = declinedCount === 1
-                    ? `${partnerName} tym razem odrzuciła Twoje stykniecie.`
-                    : `${partnerName} tym razem odrzuciła ${declinedCount} styknieć.`;
-
-                showMessage(text);
+                showMessage(
+                    declinedCount === 1
+                        ? `${partnerName} tym razem odrzuciła Twoje stykniecie.`
+                        : `${partnerName} tym razem odrzuciła ${declinedCount} styknieć.`
+                );
 
             } else {
                 showMessage(
@@ -903,7 +943,6 @@ async function respondToAllTouches(accepted) {
     acceptButton.disabled = true;
     declineButton.disabled = true;
 
-    // Pobieramy ID oczekujących styknieć.
     const { data: pending, error: pendingError } = await db
         .from("touch_requests")
         .select("id")
@@ -925,7 +964,6 @@ async function respondToAllTouches(accepted) {
         return;
     }
 
-    // Zmieniamy status wszystkich oczekujących.
     const { data, error } = await db.rpc(
         "respond_to_all_touches",
         {
@@ -965,7 +1003,6 @@ async function respondToAllTouches(accepted) {
         );
     }
 
-    // Sprawdzamy, które stykniecia faktycznie zmieniły status.
     const expectedStatus = accepted ? "accepted" : "declined";
 
     const { data: resolved, error: resolvedError } = await db
