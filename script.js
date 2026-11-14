@@ -113,125 +113,6 @@ function showSetup(html) {
 }
 
 // ===================================
-// DODATKOWE STYLE
-// ===================================
-
-const extraStyles = document.createElement("style");
-
-extraStyles.textContent = `
-.setup {
-    width: 100%;
-    margin-top: 20px;
-    text-align: center;
-}
-
-.setup button,
-.action-button {
-    border: none;
-    border-radius: 18px;
-    padding: 12px 17px;
-    margin: 5px;
-    background: #641f35;
-    color: white;
-    font-size: 14px;
-    cursor: pointer;
-}
-
-.setup button:disabled {
-    opacity: 0.6;
-    cursor: not-allowed;
-}
-
-.setup input {
-    padding: 13px;
-    border: 1px solid #d9a6ae;
-    border-radius: 12px;
-    margin: 8px;
-    max-width: 220px;
-    background: white;
-    color: #603c46;
-}
-
-.setup p {
-    color: #a58b8e;
-    margin: 9px 0;
-    line-height: 1.5;
-}
-
-.setup h3 {
-    color: #641f35;
-    margin-bottom: 10px;
-}
-
-#incomingRequest {
-    width: 100%;
-    margin-top: 18px;
-    padding: 15px;
-    border-radius: 18px;
-    background: #f5e5e3;
-    color: #641f35;
-}
-
-.request-count {
-    display: inline-block;
-    min-width: 26px;
-    padding: 5px 9px;
-    margin-left: 5px;
-    border-radius: 20px;
-    background: #641f35;
-    color: white;
-    font-weight: bold;
-}
-
-.request-actions {
-    display: flex;
-    justify-content: center;
-    flex-wrap: wrap;
-    gap: 5px;
-    margin-top: 12px;
-}
-
-.request-actions button {
-    flex: 1;
-    min-width: 130px;
-}
-
-.secondary-button {
-    background: #d9a6ae !important;
-    color: #481526 !important;
-}
-
-.pending-box {
-    background: #f5e5e3;
-    border-radius: 16px;
-    padding: 14px;
-    margin-top: 15px;
-    color: #641f35;
-}
-
-.pending-box p {
-    color: #603c46;
-}
-
-.small-text {
-    font-size: 12px;
-    color: #a58b8e;
-}
-
-.touching {
-    animation: touchAnimation 0.8s ease-in-out;
-}
-
-@keyframes touchAnimation {
-    0% { transform: scale(1); }
-    40% { transform: scale(1.12); }
-    100% { transform: scale(1); }
-}
-`;
-
-document.head.appendChild(extraStyles);
-
-// ===================================
 // LOGOWANIE ANONIMOWE
 // ===================================
 
@@ -647,12 +528,21 @@ async function startApp() {
         channel = null;
     }
 
+    if (alertChannel) {
+        await db.removeChannel(alertChannel);
+        alertChannel = null;
+    }
+
+    knownAlertIds = null;
+
     // Odczytujemy zapisane wcześniej oczekujące stykniecia.
     // Dzięki temu wykryjemy odpowiedź również po zamknięciu aplikacji.
     previousOutgoingPendingIds = loadPreviousPendingIds();
     previousIncomingPendingIds = null;
 
     showSetup(`
+        <div id="alertBox"></div>
+
         <p>Połączono z ${escapeHTML(partnerName)} ♡</p>
 
         <button id="enableNotifications">
@@ -669,8 +559,11 @@ async function startApp() {
     touchButton.disabled = false;
     touchButton.textContent = "♡ Chcę się styknąć";
 
+    renderAlertSender();
+
     await checkNotifications();
     await refreshRequests(true);
+    await refreshAlerts();
 
     channel = db
         .channel("touch-" + currentPair.id)
@@ -684,6 +577,22 @@ async function startApp() {
             },
             async () => {
                 await refreshRequests(false);
+            }
+        )
+        .subscribe();
+
+    alertChannel = db
+        .channel("alerts-" + currentPair.id)
+        .on(
+            "postgres_changes",
+            {
+                event: "*",
+                schema: "public",
+                table: "alerts",
+                filter: "pair_id=eq." + currentPair.id
+            },
+            async () => {
+                await refreshAlerts();
             }
         )
         .subscribe();
@@ -1023,6 +932,217 @@ async function respondToAllTouches(accepted) {
 
     await refreshRequests(false);
 }
+
+// ===================================
+// ALERT „ŹLE SIĘ CZUJĘ"
+// ===================================
+
+// Kto widzi przycisk alertu (na samym dole, po przewinięciu).
+// Żeby miały go obie: ["Lena", "Maja"]
+const ALERT_SENDERS = ["Maja"];
+
+// Po wysłaniu przycisk na chwilę się blokuje (w milisekundach),
+// żeby przez przypadek nie wysłać kilku alertów pod rząd.
+const ALERT_COOLDOWN = 30000;
+
+const ALERT_BUTTON_TEXT = "alert";
+
+let alertChannel = null;
+let knownAlertIds = null;
+let alertCooldownTimer = null;
+
+function isAlertSender() {
+    return ALERT_SENDERS.includes(
+        localStorage.getItem("styknij_profile")
+    );
+}
+
+// --- strona wysyłającej (Maja) ---
+
+function renderAlertSender() {
+    const app = document.querySelector(".app");
+
+    document.querySelector("#alertZone")?.remove();
+    document.querySelector("#scrollHint")?.remove();
+    app.classList.remove("has-alert");
+
+    if (!isAlertSender()) return;
+
+    app.classList.add("has-alert");
+
+    const hint = document.createElement("div");
+    hint.id = "scrollHint";
+    hint.className = "scroll-hint";
+    hint.setAttribute("aria-hidden", "true");
+    content.append(hint);
+
+    const zone = document.createElement("section");
+    zone.id = "alertZone";
+    zone.className = "alert-zone";
+    zone.innerHTML = `
+        <button id="alertButton" class="alert-button" type="button">
+            ${ALERT_BUTTON_TEXT}
+        </button>
+    `;
+    app.append(zone);
+
+    document.querySelector("#alertButton")
+        .addEventListener("click", sendAlert);
+}
+
+async function sendAlert() {
+    if (!currentPair || !partnerId) return;
+
+    const button = document.querySelector("#alertButton");
+
+    if (!button || button.disabled) return;
+
+    button.disabled = true;
+    button.textContent = "Wysyłam...";
+
+    const { data, error } = await db
+        .from("alerts")
+        .insert({
+            pair_id: currentPair.id,
+            sender_id: currentUser.id,
+            receiver_id: partnerId
+        })
+        .select("id")
+        .single();
+
+    if (error) {
+        console.error("Błąd wysyłania alertu:", error);
+
+        button.disabled = false;
+        button.textContent = "Nie wysłano. Spróbuj jeszcze raz";
+
+        setTimeout(() => {
+            if (!button.disabled) {
+                button.textContent = ALERT_BUTTON_TEXT;
+            }
+        }, 4000);
+
+        return;
+    }
+
+    const { data: pushData, error: pushError } = await db.functions.invoke(
+        "send-alert-notification",
+        {
+            body: {
+                alertId: data.id,
+                senderName: localStorage.getItem("styknij_profile")
+            }
+        }
+    );
+
+    if (pushError) {
+        console.error("Błąd powiadomienia o alercie:", pushError);
+    }
+
+    // Funkcja zwraca success:false, gdy druga osoba nie ma jeszcze
+    // włączonych powiadomień.
+    const pushFailed = Boolean(pushError) || pushData?.success === false;
+
+    button.textContent = pushFailed
+        ? "Zapisano, bez powiadomienia"
+        : "Wysłano ♡";
+
+    clearTimeout(alertCooldownTimer);
+
+    alertCooldownTimer = setTimeout(() => {
+        const again = document.querySelector("#alertButton");
+
+        if (again) {
+            again.disabled = false;
+            again.textContent = ALERT_BUTTON_TEXT;
+        }
+    }, ALERT_COOLDOWN);
+}
+
+// --- strona odbierającej (Lena) ---
+
+function formatAlertTime(value) {
+    return new Date(value).toLocaleString("pl-PL", {
+        day: "numeric",
+        month: "short",
+        hour: "2-digit",
+        minute: "2-digit"
+    });
+}
+
+async function refreshAlerts() {
+    if (!currentPair || !currentUser) return;
+
+    const { data, error } = await db
+        .from("alerts")
+        .select("*")
+        .eq("pair_id", currentPair.id)
+        .eq("receiver_id", currentUser.id)
+        .is("seen_at", null)
+        .order("created_at", { ascending: false })
+        .limit(5);
+
+    if (error) {
+        console.error("Błąd pobierania alertów:", error);
+        return;
+    }
+
+    const alerts = data || [];
+
+    const hasNew = knownAlertIds !== null &&
+        alerts.some(item => !knownAlertIds.has(item.id));
+
+    knownAlertIds = new Set(alerts.map(item => item.id));
+
+    if (hasNew) {
+        showMessage(`${partnerName} potrzebuje Cię ♡`);
+
+        if (navigator.vibrate) {
+            navigator.vibrate([300, 150, 300, 150, 300]);
+        }
+    }
+
+    const box = document.querySelector("#alertBox");
+
+    if (!box) return;
+
+    box.innerHTML = alerts.map(item => `
+        <div class="alert-card">
+            <h3>${escapeHTML(partnerName)} Cię potrzebuje ♡</h3>
+            <p class="small-text">${escapeHTML(formatAlertTime(item.created_at))}</p>
+            <button type="button" data-seen="${escapeHTML(item.id)}">
+                Widzę ♡
+            </button>
+        </div>
+    `).join("");
+
+    box.querySelectorAll("[data-seen]").forEach(button => {
+        button.addEventListener("click", () =>
+            markAlertSeen(button.dataset.seen)
+        );
+    });
+}
+
+async function markAlertSeen(id) {
+    const { error } = await db
+        .from("alerts")
+        .update({ seen_at: new Date().toISOString() })
+        .eq("id", id)
+        .eq("receiver_id", currentUser.id);
+
+    if (error) {
+        showMessage("Nie udało się oznaczyć jako widziane.");
+        return;
+    }
+
+    await refreshAlerts();
+}
+
+document.addEventListener("visibilitychange", () => {
+    if (document.visibilityState === "visible" && currentPair && partnerId) {
+        refreshAlerts();
+    }
+});
 
 // ===================================
 // ANIMACJA
